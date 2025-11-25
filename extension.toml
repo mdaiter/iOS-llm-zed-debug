@@ -1,5 +1,14 @@
+id = "ios-debug"
+name = "iOS DAP debugger"
+version = "0.0.1"
 schema_version = 1
+authors = ["Matthew Daiter <mdaiter8121@gmail.com>"]
+description = "A DAP iOS debugging extension"
+repository = "https://github.com/mdaiter/iOS-llm-zed-debug"
+
+[extension]
 name = "ios-lldb"
+id = "ios-lldb"
 version = "0.1.0"
 description = "Minimal LLDB debug adapter for Zed"
 authors = ["ios-lldb"]
