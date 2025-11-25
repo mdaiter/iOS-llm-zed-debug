@@ -1,0 +1,14 @@
+schema_version = 1
+name = "ios-lldb"
+version = "0.1.0"
+description = "Minimal LLDB debug adapter for Zed"
+authors = ["ios-lldb"]
+repository = "https://example.com/ios-lldb"
+
+[debug_adapters.ios-lldb]
+transport = "stdio"
+command = "ios-lldb-dap"
+
+[[debug_adapter_schemas]]
+name = "ios-lldb"
+path = "debug_adapter_schemas/ios-lldb.json"

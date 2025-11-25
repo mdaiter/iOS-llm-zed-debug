@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ios-lldb",
+  "type": "object",
+  "properties": {
+    "request": {
+      "type": "string",
+      "description": "Whether to launch a new program or attach to an existing debugserver session.",
+      "enum": ["launch", "attach"]
+    },
+    "debugserverPort": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Port on localhost where debugserver listens."
+    },
+    "program": {
+      "type": "string",
+      "description": "Path to the binary to debug."
+    },
+    "cwd": {
+      "type": "string",
+      "description": "Working directory for the debuggee."
+    }
+  },
+  "required": ["request", "debugserverPort", "program", "cwd"],
+  "additionalProperties": false
+}

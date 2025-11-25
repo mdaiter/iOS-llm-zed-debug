@@ -1,0 +1,12 @@
+{
+  "configurations": [
+    {
+      "label": "Host Debug (ios-lldb)",
+      "adapter": "ios-lldb",
+      "request": "launch",
+      "program": "/absolute/path/to/host/binary",
+      "cwd": "/absolute/path/to/project",
+      "debugserverPort": 0
+    }
+  ]
+}

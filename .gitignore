@@ -1,0 +1,6 @@
+target/
+.zed/
+.DS_Store
+*.dSYM/
+/ios-lldb-dap.log
+.env
