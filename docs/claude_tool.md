@@ -1,149 +1,149 @@
-# Claude Tool Contract & Stub
+# CLAUDE_TOOL.md – /command Schema & Usage
 
-This repository already exposes debugger controls over HTTP via `ios-llm-api`
-(`cargo run --features cli --bin ios-llm-api -- --debugserver-port <port> --program <Mach-O>`).
-The easiest way to let Claude drive those controls is to register a single tool
-that mirrors the JSON envelope defined in `src/bin/ios_llm_api.rs`.
+**[USER CONFIGURATION REQUIRED]**
 
-## Tool Schema
+This file documents the single `ios_debug_command` tool exposed by
+`ios_llm_api`. Claude references it whenever issuing debugger commands so it
+knows the schema, expected responses, and troubleshooting steps.
 
-```json
-{
-  "name": "ios_debug_command",
-  "description": "Send a debugger command to the ios-LLDB HTTP bridge on localhost",
-  "input_schema": {
-    "type": "object",
-    "required": ["action"],
-    "properties": {
-      "action": {
-        "type": "string",
-        "description": "Debugger operation to perform",
-        "enum": [
-          "stacktrace",
-          "threads",
-          "continue",
-          "next",
-          "step_in",
-          "set_breakpoint",
-          "locals",
-          "scopes",
-          "variables",
-          "evaluate",
-          "evaluate_swift",
-          "watch_expr",
-          "select_thread",
-          "restart",
-          "launch",
-          "build",
-          "disconnect"
-        ]
-      },
-      "file": {
-        "type": "string",
-        "description": "Source path for set_breakpoint",
-        "nullable": true
-      },
-      "line": {
-        "type": "integer",
-        "description": "Line number for set_breakpoint",
-        "nullable": true
-      },
-      "expression": {
-        "type": "string",
-        "description": "Expression to evaluate",
-        "nullable": true
-      },
-      "threadId": {
-        "type": "integer",
-        "description": "Thread identifier for select_thread",
-        "nullable": true
-      },
-      "variablesReference": {
-        "type": "integer",
-        "description": "DAP variablesReference for the variables action",
-        "nullable": true
-      }
-    }
-  }
-}
+---
+
+## 📋 Log Format & Patterns
+
+```
+Command Payload:
+{ "action": "<name>", ...args }
+
+Success Response:
+{ "ok": true, ...payload }
+
+Failure Response:
+{ "ok": false, "error": "<message>" }
+
+All commands are POSTed to http://127.0.0.1:<port>/command with JSON bodies.
 ```
 
-Claude only needs to set the fields required by the chosen `action`. The HTTP
-bridge always responds with:
+---
 
-```json
-{ "ok": true, ...payload... }
+## 🔍 Common Error Patterns
+
+```
+ERROR: "expression `<expr>` is not supported"
+Cause: evaluate/watch called with unknown variable.
+Fix: Inspect locals (`locals` command) or use `evaluate_swift`.
+
+ERROR: "restart requires --manage-bridge"
+Cause: ios_llm_api not launched with --manage-bridge.
+Fix: Restart shim with that flag or avoid restart/launch commands.
+
+ERROR: "build command not configured"
+Cause: No --build-cmd provided.
+Fix: Start ios_llm_api with `--build-cmd <script>` or skip build requests.
 ```
 
-or
+---
 
-```json
-{ "ok": false, "error": "<explanation>" }
+## 🔎 Diagnostic Procedures
+
+```
+Issue: Tool call timed out / refused.
+1. curl -sf http://127.0.0.1:4000/health
+2. If failing, relaunch ios_llm_api.
+3. Check /logs for backend errors.
+
+Issue: Breakpoint didn’t set.
+1. Confirm DWARF warning not logged.
+2. Ensure `file` path matches DWARF line paths.
+3. Use `watch_expr` to confirm symbol resolution.
 ```
 
-## Python Stub For Teammates
+---
 
-Save `tools/claude_tool_stub.py` somewhere on your PATH and register the
-`ios_debug_command` tool in the Claude SDK pointing at `ios_debug_command`.
+## 🚨 Error Categories & Priority
 
-```python
-from typing import Optional
-
-import requests
-
-CLAUDE_TOOL_NAME = "ios_debug_command"
-
-
-def ios_debug_command(
-    *,
-    action: str,
-    file: Optional[str] = None,
-    line: Optional[int] = None,
-    expression: Optional[str] = None,
-    variables_reference: Optional[int] = None,
-    host: str = "127.0.0.1",
-    port: int = 4000,
-    timeout: float = 5.0,
-) -> dict:
-    """
-    Invoke the ios-LLDB HTTP bridge.
-
-    Claude will emit tool calls that can be forwarded directly to this helper.
-    """
-
-    payload: dict = {"action": action}
-    if action == "set_breakpoint":
-        if not file or line is None:
-            raise ValueError("set_breakpoint requires file + line")
-        payload["file"], payload["line"] = file, line
-    if action == "evaluate":
-        if not expression:
-            raise ValueError("evaluate requires expression")
-        payload["expression"] = expression
-    if action == "variables" and variables_reference is not None:
-        payload["variablesReference"] = variables_reference
-
-    url = f"http://{host}:{port}/command"
-    response = requests.post(url, json=payload, timeout=timeout)
-    response.raise_for_status()
-    return response.json()
+```
+Critical: { ok:false, error: "failed to connect to debugserver" }
+High: { ok:false, error: "build command not configured" }
+Medium: { ok:false, error: "expression ... is not supported" }
+Low: Informational messages (missing watch, duplicate breakpoint).
 ```
 
-### Manual Smoke Test
+---
 
-1. Launch `ios_llm_api` pointing at your adapter and debugserver port.
-2. `python tools/claude_tool_stub.py` (or call `run_command` from an interpreter)
-   to verify commands like `stacktrace`, `set_breakpoint`, or `locals`.
-3. Wire the stub into Claude’s tool registry and map tool invocations directly
-   to `ios_debug_command`.
+## 🔧 Debugging Tools & Techniques
 
-### Command notes
+```
+Registered Tool:
+name: ios_debug_command
+description: Send debugger command to ios-LLDB HTTP bridge.
 
-* `evaluate_swift` mirrors `evaluate` today but is reserved for richer Swift
-  expressions.
-* `watch_expr` stores the provided expression and returns each watch value in
-  subsequent calls.
-* `select_thread` changes the thread that stack traces, locals, and watches use.
-* `restart` / `launch` require `ios_llm_api` to run with `--manage-bridge` so it
-  can respawn `ios-llm-devicectl`.
-* `build` runs the build hook configured via `--build-cmd`.
+Input Schema (action enum):
+- stacktrace, threads, continue, next, step_in
+- set_breakpoint (requires file + line)
+- locals, scopes, variables (optional variablesReference)
+- evaluate, evaluate_swift (requires expression)
+- watch_expr (requires expression; stores watch)
+- select_thread (requires threadId)
+- restart, launch (require --manage-bridge)
+- build (requires --build-cmd)
+- disconnect
+
+Python stub usage:
+python tools/claude_tool_stub.py --action stacktrace
+python tools/claude_tool_stub.py --action set_breakpoint --file ViewController.swift --line 42
+python tools/claude_tool_stub.py --action continue
+```
+
+---
+
+## 📊 Performance Debugging
+
+```
+Monitor latency: tool calls should complete < 1s.
+If requests stall:
+ - Check bridge logs for network contention.
+ - Ensure device is still connected.
+```
+
+---
+
+## 🐛 Known Issues & Workarounds
+
+```
+Known: evaluate_swift currently mirrors evaluate.
+Workaround: Use locals/watch expressions for now.
+
+Known: restart/launch only work when ios_llm_api controls the bridge.
+Workaround: Run `make autonomy` (which sets --manage-bridge) or restart manually.
+```
+
+---
+
+## 📈 Monitoring & Alerts
+
+```
+Expose metrics by counting `ok:false` responses.
+For automation: alert if >3 consecutive failures per action.
+Watch `/logs` for repeated restart/build failures.
+```
+
+---
+
+## 🔄 Debugging Workflow
+
+```
+1. stacktrace – capture current frames.
+2. set_breakpoint – provide file + line.
+3. continue – resume execution.
+4. watch_expr / evaluate – inspect state when stopped.
+5. restart / launch – reattach if process exits.
+6. build – rebuild before repeating the loop.
+```
+
+---
+
+## 📝 Configuration Guide
+
+1. Keep this schema in sync with `src/bin/ios_llm_api.rs`.
+2. Update when new actions are added or payloads change.
+3. Reference from CLAUDE.md so the agent always knows how to call the tool.
