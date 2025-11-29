@@ -1,218 +1,144 @@
 # ios-lldb-dap
 
-This repository contains a minimal Debug Adapter Protocol (DAP) server written in Rust,
-along with a Zed extension that wires the adapter into Zed’s debugger UI. The focus is
-on providing accurate symbolication for iOS-style Mach-O binaries (including DWARF
-information from dSYM bundles) and creating a clear path from local host testing to
-running against an iOS simulator or device via the Luxmentis/xcede tooling.
+Rust-powered tooling for debugging Swift/iOS binaries anywhere—Zed, your shell,
+or Claude Code. This repo bundles:
 
-The workflow is intentionally broken down into four phases so you can validate each
-piece quickly.
+* **`ios-lldb-dap`** – a minimal Debug Adapter Protocol server. Any editor
+  (Zed, VS Code, Neovim, Helix, etc.) can point its DAP client at this binary.
+* **CLI helpers** – `ios-llm-devicectl` and `ios_llm_api` for pairing devices,
+  launching `debugserver`, and driving breakpoints completely from the terminal.
+* **Claude automation** – `/command`, `/health`, and `/logs` endpoints plus a
+  documented tool schema so LLM agents can run the entire build→deploy→debug loop.
 
-## Phase 1 – Backend + unit tests + fake DAP harness
+The adapter understands Mach-O + dSYM DWARF data, so you get real symbolication
+when stepping through Swift.
 
-1. Build and test everything locally:
+---
 
-   ```bash
-   cargo test --features cli
-   cargo build --features cli --bin ios-lldb-dap
-   ```
+## Getting Started (host only)
 
-2. The unit tests exercise symbol parsing, backend stack traces, and a small fake DAP
-   harness (`tests/dap_harness.rs`). The harness spawns the adapter binary, speaks DAP
-   over stdio, and asserts that stack traces are produced even without LLDB connected.
-   This provides a fast feedback loop without Zed or iOS.
+```bash
+cargo test --features cli                      # run unit + DAP harness tests
+cargo build --features cli --bin ios-lldb-dap  # build the adapter
 
-## Phase 2 – Zed integration with a host binary
-
-1. Install the extension as a dev extension (from the repo root):
-
-   ```bash
-   zed extension install --path .
-   ```
-
-2. Build the adapter:
-
-   ```bash
-   cargo build --features cli --bin ios-lldb-dap
-   ```
-
-3. Create a `debug.json` (see `debug.host.json` in this repo) that points to a host
-   binary on your machine:
-
-   ```json
-   {
-     "configurations": [
-       {
-         "label": "Host Debug (ios-lldb)",
-         "adapter": "ios-lldb",
-         "request": "launch",
-         "program": "/absolute/path/to/host/binary",
-         "cwd": "/absolute/path/to/project",
-         "debugserverPort": 0
-       }
-     ]
-   }
-   ```
-
-4. Open the project in Zed, start a debug session using the `"Host Debug (ios-lldb)"`
-   configuration, and observe stack traces sourced from the Mach-O/DWARF data of the
-   host binary. The adapter binary is located automatically (or via the user-provided
-   path) and the config is forwarded through the `IOS_LLDB_DAP_CONFIG` environment
-   variable.
-
-## Phase 3 – iOS simulator via Luxmentis/xcede
-
-Assumptions:
-
-* You followed the Luxmentis guides (“Build, run and debug iOS and Mac apps in Zed
-  instead of Xcode”, “Test Xcode apps and Swift packages in Zed”).
-* xcede and the Xcode build server are configured.
-* You can already build and run the iOS app in the simulator from Zed via the default
-  xcede adapter.
-
-Example `debug.json` that keeps the existing xcede adapter while adding this adapter:
-
-```json
-{
-  "configurations": [
-    {
-      "label": "iOS (xcede default)",
-      "adapter": "xcede-ios",
-      "request": "launch",
-      "program": "MyApp.app",
-      "cwd": "/path/to/MyApp",
-      "debugserverPort": 12345
-    },
-    {
-      "label": "iOS (ios-lldb custom)",
-      "adapter": "ios-lldb",
-      "request": "attach",
-      "program": "/path/to/MyApp.app/MyApp",
-      "cwd": "/path/to/MyApp",
-      "debugserverPort": 12345
-    }
-  ]
-}
+# Optional: install the Zed extension
+zed extension install --path .
 ```
 
-The Luxmentis/xcede tooling:
+You can now debug any macOS binary by pointing your editor’s DAP config at the
+`ios-lldb-dap` binary and supplying `program`, `cwd`, and (optionally) a
+`debugserverPort` if you’re attaching.
 
-* Builds the app and launches it in the simulator.
-* Starts `debugserver` (or LLDB) listening on a localhost port (e.g. `12345`).
+---
 
-This adapter:
+## Running against debugserver manually
 
-* Reads the `program` path (the simulator’s Mach-O image) to build the symbol context.
-* Connects to the provided `debugserverPort`, performs the gdb-remote handshake, and
-  issues real packets over TCP. If no server is reachable, packets are queued and
-  replayed once a connection is established.
-* Symbolicates stack traces and prepares breakpoints using DWARF data.
+You don’t need Xcode UI or Zed—just the CLI:
 
-## Phase 4 – iOS device (optional for now)
+```bash
+PORT=50001
+BIN=/path/to/your/Mach-O
 
-The same adapter logic applies when targeting a physical device. The only change is
-transport:
+# 1. Start debugserver (from Xcode’s toolchain)
+/Applications/Xcode.app/Contents/SharedFrameworks/LLDB.framework/Versions/A/Resources/debugserver \
+  127.0.0.1:$PORT "$BIN"
 
-1. Use `iproxy` (or similar) to forward the device’s `debugserver` port to localhost.
-2. Launch the app on the device using Luxmentis/xcede or your preferred tooling.
-3. Reuse the `"ios-lldb"` configuration with the forwarded port, for example:
+# 2. Start the HTTP shim
+cargo run --features cli --bin ios-llm-api -- \
+  --debugserver-port $PORT \
+  --program "$BIN" \
+  --port 4000
 
-   ```json
-   {
-     "label": "iOS Device (ios-lldb)",
-     "adapter": "ios-lldb",
-     "request": "attach",
-     "program": "/path/to/MyApp.app/MyApp",
-     "cwd": "/path/to/MyApp",
-     "debugserverPort": 23456
-   }
-   ```
+# 3. Drive it via the tool stub or Claude
+python tools/claude_tool_stub.py --action stacktrace
+python tools/claude_tool_stub.py --action set_breakpoint --file Sources/Foo.swift --line 42
+python tools/claude_tool_stub.py --action continue
+```
 
-`Backend::connect_debugserver` attempts to open a TCP connection to the forwarded
-port, runs the gdb-remote handshake (`qSupported` + `QStartNoAckMode` + `?`), and
-immediately starts emitting packets. If the port is not reachable the adapter logs
-the error and continues queuing packets so you can retry once the transport is ready.
+You’ll see stack traces and breakpoints without leaving the shell.
 
-## Quick Start – Host Only
+---
 
-1. Build and install:
+## Full device/simulator workflow
 
-   ```bash
-   cargo build --features cli --bin ios-lldb-dap
-   zed extension install --path .
-   ```
+For simulators or devices, use the dedicated helpers:
 
-2. Generate a configuration:
+```bash
+# Build or install in Debug (DWARF) as usual
+xcodebuild -scheme MyApp -configuration Debug -destination 'id=<udid>'
 
-   ```bash
-   cargo run --features cli --bin ios-lldb-gendebug -- --program /absolute/path/to/binary --port 0 --write
-   ```
+# Launch bridge + shim automatically
+DEVICE=<udid> \
+BUNDLE_ID=com.example.MyApp \
+APP_BUNDLE=/absolute/path/MyApp.app \
+make autonomy
+```
 
-3. Open Zed and pick the `"ios-lldb"` entry from `.zed/debug.json`.
+The `autonomy` target runs `ios-llm-devicectl` (`--start-stopped`, optional
+install) and `ios_llm_api --manage-bridge --enable-log-stream`, then waits for
+`/health` to report success. You can watch logs with `curl -Ns
+http://127.0.0.1:4000/logs` and interact over `/command`.
 
-## Quick Start – iOS Simulator (Luxmentis/xcede)
+Documentation for Claude automation lives in:
 
-1. Ensure `xcede` can run your app in the simulator.
-2. Generate a configuration and keep the helper alive:
+* `docs/CLAUDE_AUTONOMY.md` – mission overview, required commands, safeguards.
+* `docs/CLAUDE_TOOL.md` – the `ios_debug_command` schema and response contracts.
+* `docs/DEBUGGING.md` – log patterns, troubleshooting steps, severity levels.
 
-   ```bash
-   cargo run --features cli --bin ios-lldb-setup -- --mode sim --project /path/to/YourApp.xcodeproj --scheme YourApp --write --wait
-   ```
+Drop those into your CLAUDE.md chain and register the tool to let Claude
+deploy/debug autonomously.
 
-3. Start debugging from Zed using the generated entry.
+---
 
-## Quick Start – iOS Device (iproxy + xcede)
+## Editor integration (Zed & friends)
 
-1. Connect the device and trust the host.
-2. Run:
+The Zed extension is included (`extension.toml`) but it’s optional—any editor
+with DAP support works. For Zed:
 
-   ```bash
-   cargo run --features cli --bin ios-lldb-setup -- --mode device --project /path/to/YourApp.xcodeproj --scheme YourApp --write --wait
-   ```
+1. `zed extension install --path .`
+2. Generate `.zed/debug.json` via
+   `cargo run --features cli --bin ios-lldb-gendebug -- --program /absolute/path --port 0 --write`
+3. Pick the `ios-lldb` profile inside Zed.
 
-   The helper spawns iproxy, forwards the remote port, and writes the configuration.
-3. Debug from Zed using the `"ios-lldb"` entry.
+Other editors just need a DAP config pointing to the `ios-lldb-dap` binary and
+the same arguments.
 
-## Notes
+---
 
-* The symbolication layer prefers realistic code paths (it uses `addr2line::Loader`
-  pointed at real binaries). Tests auto-skip when DWARF isn’t available.
-* The DAP adapter discovers its configuration via `IOS_LLDB_DAP_CONFIG`, which is set
-  by the Zed extension (see `src/lib.rs`).
-* Neither the Zed core repository nor the Luxmentis tooling is modified – this project
-  remains an external adapter/extension.
+## DWARF requirements
 
-### DWARF requirements
+Breakpoints rely on DWARF line tables. Always build your Mach-O (or its `.dSYM`)
+with Debug info (`-g`, `SWIFT_OPTIMIZATION_LEVEL=-Onone`, or Xcode’s Debug
+configuration). When `ios_llm_api` starts it inspects the provided path and
+warns if DWARF is missing. Pass `--require-dwarf` to force the process to abort
+instead of running without symbolication.
 
-Breakpoints rely on DWARF line tables. Build your targets with the Debug
-configuration (or pass `-g` / `SWIFT_OPTIMIZATION_LEVEL=-Onone`) so the binary or
-its `.dSYM` contains DWARF. When `ios_llm_api` starts it checks the provided Mach-O
-for DWARF information and logs a warning like
-`DWARF line info missing for /path/to/MyApp`. Rebuild in Debug mode (or run
-`xcodebuild -configuration Debug`) before retrying, or pass `--require-dwarf` to
-make the shim exit immediately if the data is missing.
+---
 
-### LLM HTTP controls
+## Advanced features
 
-`ios_llm_api` exposes the `/command` endpoint documented in
-`docs/claude_tool.md`. In addition to stack traces, locals, and breakpoints you
-can now:
+`ios_llm_api` exposes more than stack traces:
 
-* `restart` / `launch` – restart the managed `ios-llm-devicectl` bridge and
-  reconnect to debugserver (requires running `ios_llm_api` with
-  `--manage-bridge --device --bundle-id`).
-* `watch_expr` and `evaluate_swift` – persist and re-evaluate watch expressions.
-* `select_thread` – change the active thread before inspecting locals/watches.
-* `build` – run the build hook configured via `--build-cmd ...` (repeat the flag
-  to pass multiple arguments, for example
-  `--build-cmd cargo --build-cmd run --build-cmd --features --build-cmd cli --build-cmd --bin --build-cmd ios-lldb-setup --build-cmd -- --mode sim`).
+| Capability | Command |
+|------------|---------|
+| Watch expressions | `watch_expr` / `evaluate_swift` |
+| Thread control | `threads`, `select_thread` |
+| Session management | `restart`, `launch`, `disconnect` |
+| Build hook | `build` (when `--build-cmd` provided) |
+| Logs & health | `GET /logs`, `GET /health` |
 
-Enable device log streaming with `--enable-log-stream`; the SSE endpoint lives
-at `http://127.0.0.1:<port>/logs`. The `/health` endpoint returns the current
-configuration, which `make autonomy` now uses as a readiness probe.
+All of these are covered in `docs/CLAUDE_TOOL.md` and exercised by
+`tools/claude_tool_stub.py`.
 
-See `docs/CLAUDE_AUTONOMY.md` for a Claude-ready system prompt and a
-runnable example that covers pairing, building, launching the bridge, starting
-the HTTP shim, and issuing debugger commands. Tool contract details live in
-`docs/CLAUDE_TOOL.md`, and troubleshooting guidance is in `docs/DEBUGGING.md`.
+---
+
+## Helpful references
+
+* `tests/dap_harness.rs` – proves the DAP adapter works even without LLDB.
+* `src/bin/ios-llm-devicectl.rs` – how we wrap `xcrun devicectl`.
+* `src/bin/ios_llm_api.rs` – the HTTP shim plus log streaming and restart logic.
+
+We built this so fellow Swift developers (and the broader Apple ecosystem) can
+debug with the tooling they like—command line, editor, or Claude Code. If you
+share it with the Swift Reddit crowd, just remind them they need DWARF-enabled
+builds and the Xcode CLI tools installed. Happy debugging!
